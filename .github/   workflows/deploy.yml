@@ -1,48 +1,98 @@
-name: Deploy to Google Apps Script
+name: Deploy Script
 
 on:
+  workflow_dispatch:
   push:
-    branches:
-      - dev    # deploy to DEV
-      - test   # deploy to TEST
-      - main   # deploy to PROD
+    branches: [main, develop]
+  release:
+    types: [published]
+  schedule:
+    - cron: "0 0 * * SUN"
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout the repo code
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      # Step 2: Set up Node.js (needed for clasp)
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      # Step 3: Install clasp
       - name: Install clasp
-        run: npm install -g @google/clasp
+        id: install-clasp
+        run: sudo npm install @google/clasp@2.4.1 -g
 
-      # Step 4: Authenticate with Google using service account
-      - name: Authenticate with Google
+      - name: Write CLASPRC_JSON secret to .clasprc.json file
+        id: write-clasprc
+        run: echo "$CLASPRC_JSON_SECRET" >> ~/.clasprc.json
+        env:
+          CLASPRC_JSON_SECRET: ${{ secrets.CLASPRC_JSON }}
+
+      - name: Check clasp login status
+        id: clasp_login
+        run: clasp login --status
+
+      - name: Save current .clasprc.json contents to CLASPRC_JSON_FILE environment variable
+        id: save-clasprc
         run: |
-          echo "${{ secrets.GCP_CREDENTIALS }}" > service-account.json
-          clasp login --creds service-account.json
+          echo ::add-mask::$(tr -d '\n\r' < ~/.clasprc.json)
+          echo "CLASPRC_JSON_FILE=$(tr -d '\n\r' < ~/.clasprc.json)" >> $GITHUB_ENV        
+      
+      - name: Save CLASPRC_JSON_FILE environment variable to CLASPRC_JSON repo secret
+        id: set-clasprc-secret
+        if: ${{ env.CLASPRC_JSON_FILE != env.CLASPRC_JSON_SECRET  }}
+        uses: hmanzur/actions-set-secret@v2.0.0
+        env:
+          CLASPRC_JSON_SECRET: ${{ secrets.CLASPRC_JSON }}
+        with:
+          name: "CLASPRC_JSON"
+          value: ${{ env.CLASPRC_JSON_FILE }}
+          repository: ${{ github.repository }}
+          token: ${{ secrets.REPO_ACCESS_TOKEN }}
 
-      # Step 5a: Deploy to DEV if pushing to 'dev'
-      - name: Deploy to Dev
-        if: github.ref == 'refs/heads/dev'
-        run: clasp push --force --project .clasp.dev.json
+      - name: Checkout repo
+        id: checkout-repo
+        if: ${{github.event_name	!= 'schedule' }}
+        uses: actions/checkout@v2
 
-      # Step 5b: Deploy to TEST if pushing to 'test'
-      - name: Deploy to Test
-        if: github.ref == 'refs/heads/test'
-        run: clasp push --force --project .clasp.test.json
+      - name: Set scriptId in .clasp.json file
+        id: set-script-id
+        if: ${{ github.event_name	!= 'schedule' && env.SCRIPT_ID}}
+        run: jq '.scriptId = "${{env.SCRIPT_ID}}"' .clasp.json > /tmp/.clasp.json && mv /tmp/.clasp.json .clasp.json
+        env:
+          SCRIPT_ID: ${{secrets.SCRIPT_ID}}
 
-      # Step 5c: Deploy to PROD if pushing to 'main'
-      - name: Deploy to Prod
-        if: github.ref == 'refs/heads/main'
-        run: clasp push --force --project .clasp.prod.json
+      - name: Push script to scripts.google.com
+        id: clasp-push
+        if: ${{ github.event_name	!= 'schedule'}}
+        run: clasp push -f
+
+      - name: Deploy Script
+        id: clasp-deploy
+        if: ${{env.DEPLOYMENT_ID && (github.event_name == 'release' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))}}
+        run: clasp deploy -i "$DEPLOYMENT_ID" -d "$GITHUB_REF"
+        env:
+          DEPLOYMENT_ID: ${{ secrets.DEPLOYMENT_ID }}
+  # dump-context:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Dump GitHub context
+  #       env:
+  #         GITHUB_CONTEXT: ${{ toJSON(github) }}
+  #       run: echo "$GITHUB_CONTEXT"
+  #     - name: Dump job context
+  #       env:
+  #         JOB_CONTEXT: ${{ toJSON(job) }}
+  #       run: echo "$JOB_CONTEXT"
+  #     - name: Dump steps context
+  #       env:
+  #         STEPS_CONTEXT: ${{ toJSON(steps) }}
+  #       run: echo "$STEPS_CONTEXT"
+  #     - name: Dump runner context
+  #       env:
+  #         RUNNER_CONTEXT: ${{ toJSON(runner) }}
+  #       run: echo "$RUNNER_CONTEXT"
+  #     - name: Dump strategy context
+  #       env:
+  #         STRATEGY_CONTEXT: ${{ toJSON(strategy) }}
+  #       run: echo "$STRATEGY_CONTEXT"
+  #     - name: Dump matrix context
+  #       env:
+  #         MATRIX_CONTEXT: ${{ toJSON(matrix) }}
+  #       run: echo "$MATRIX_CONTEXT"

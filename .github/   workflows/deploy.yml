@@ -1,48 +1,53 @@
-name: Deploy to Google Apps Script
+name: Deploy Script
 
 on:
+  workflow_dispatch:
   push:
-    branches:
-      - dev    # deploy to DEV
-      - test   # deploy to TEST
-      - main   # deploy to PROD
+    branches: [dev, test, main]
+  release:
+    types: [published]
+  schedule:
+    - cron: "0 0 * * SUN"
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout the repo code
-      - name: Checkout code
+      - name: Install clasp
+        run: sudo npm install @google/clasp@2.4.1 -g
+
+      - name: Write CLASPRC_JSON secret to .clasprc.json file
+        run: echo "$CLASPRC_JSON_SECRET" > ~/.clasprc.json
+        env:
+          CLASPRC_JSON_SECRET: ${{ secrets.CLASPRC_JSON }}
+
+      - name: Check clasp login status
+        run: clasp login --status
+
+      - name: Checkout repo
+        if: ${{ github.event_name != 'schedule' }}
         uses: actions/checkout@v4
 
-      # Step 2: Set up Node.js (needed for clasp)
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      # Step 3: Install clasp
-      - name: Install clasp
-        run: npm install -g @google/clasp
-
-      # Step 4: Authenticate with Google using service account
-      - name: Authenticate with Google
+      # Pick correct SCRIPT_ID depending on branch
+      - name: Set scriptId in .clasp.json file
+        if: ${{ github.event_name != 'schedule' }}
         run: |
-          echo "${{ secrets.GCP_CREDENTIALS }}" > service-account.json
-          clasp login --creds service-account.json
+          if [[ "${GITHUB_REF}" == "refs/heads/dev" ]]; then
+            SCRIPT_ID=${{ secrets.SCRIPT_ID_DEV }}
+          elif [[ "${GITHUB_REF}" == "refs/heads/test" ]]; then
+            SCRIPT_ID=${{ secrets.SCRIPT_ID_TEST }}
+          elif [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            SCRIPT_ID=${{ secrets.SCRIPT_ID_PROD }}
+          fi
+          echo "Using scriptId=$SCRIPT_ID"
+          jq --arg sid "$SCRIPT_ID" '.scriptId = $sid' .clasp.json > /tmp/.clasp.json && mv /tmp/.clasp.json .clasp.json
 
-      # Step 5a: Deploy to DEV if pushing to 'dev'
-      - name: Deploy to Dev
-        if: github.ref == 'refs/heads/dev'
-        run: clasp push --force --project .clasp.dev.json
+      - name: Push script to scripts.google.com
+        if: ${{ github.event_name != 'schedule' }}
+        run: clasp push -f
 
-      # Step 5b: Deploy to TEST if pushing to 'test'
-      - name: Deploy to Test
-        if: github.ref == 'refs/heads/test'
-        run: clasp push --force --project .clasp.test.json
-
-      # Step 5c: Deploy to PROD if pushing to 'main'
-      - name: Deploy to Prod
-        if: github.ref == 'refs/heads/main'
-        run: clasp push --force --project .clasp.prod.json
+      # Optional: deploy only on release or main push
+      - name: Deploy Script
+        if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'release' }}
+        run: clasp deploy -i "${{ secrets.DEPLOYMENT_ID_PROD }}" -d "$GITHUB_REF"

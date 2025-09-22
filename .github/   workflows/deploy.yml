@@ -1,0 +1,48 @@
+name: Deploy to Google Apps Script
+
+on:
+  push:
+    branches:
+      - dev    # deploy to DEV
+      - test   # deploy to TEST
+      - main   # deploy to PROD
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout the repo code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Node.js (needed for clasp)
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Step 3: Install clasp
+      - name: Install clasp
+        run: npm install -g @google/clasp
+
+      # Step 4: Authenticate with Google using service account
+      - name: Authenticate with Google
+        run: |
+          echo "${{ secrets.GCP_CREDENTIALS }}" > service-account.json
+          clasp login --creds service-account.json
+
+      # Step 5a: Deploy to DEV if pushing to 'dev'
+      - name: Deploy to Dev
+        if: github.ref == 'refs/heads/dev'
+        run: clasp push --force --project .clasp.dev.json
+
+      # Step 5b: Deploy to TEST if pushing to 'test'
+      - name: Deploy to Test
+        if: github.ref == 'refs/heads/test'
+        run: clasp push --force --project .clasp.test.json
+
+      # Step 5c: Deploy to PROD if pushing to 'main'
+      - name: Deploy to Prod
+        if: github.ref == 'refs/heads/main'
+        run: clasp push --force --project .clasp.prod.json
